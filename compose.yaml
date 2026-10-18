@@ -1,0 +1,44 @@
+name: oho
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: oho
+      POSTGRES_USER: oho
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}
+    volumes:
+      - oho_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oho -d oho"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [internal]
+  api:
+    build: ./server
+    restart: unless-stopped
+    environment:
+      OHO_DATABASE_URL: ${OHO_DATABASE_URL:?OHO_DATABASE_URL required}
+      OHO_ADMIN_TOKEN: ${OHO_ADMIN_TOKEN:?OHO_ADMIN_TOKEN required}
+      OHO_ENROLLMENT_TOKEN: ${OHO_ENROLLMENT_TOKEN:?OHO_ENROLLMENT_TOKEN required}
+    depends_on:
+      db: {condition: service_healthy}
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3)"]
+      interval: 10s
+      retries: 10
+  web:
+    build: ./dashboard
+    restart: unless-stopped
+    depends_on:
+      api: {condition: service_healthy}
+    ports:
+      - "127.0.0.1:${OHO_PORT:-8788}:80"
+    networks: [internal]
+  # Expose only web on loopback. Use host Caddy as the public TLS reverse proxy.
+networks:
+  internal:
+volumes:
+  oho_db:
