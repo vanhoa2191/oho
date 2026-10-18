@@ -1,43 +1,48 @@
-# OHO worker
+# OHO worker — simplified onboarding
 
-Supported: macOS and Linux Python 3.12+, outbound HTTPS.
+Supported: Linux and macOS, Python 3.12+, Git and outbound HTTPS.
 
-## Enrollment
-Create a local checked-out Git worktree or repository for each project, then:
+## One-time server setup
+
+The human dashboard stays behind Cloudflare Access at `oho.tienganhcungcon.online`. Workers use a dedicated hostname `workers.tienganhcungcon.online` with a restricted gateway that forwards only node lifecycle routes. The gateway does not expose the dashboard or general admin API; enrollment requires the OHO enrollment token and each registered node uses its own credential.
+
+Follow [docs/worker-gateway.md](../docs/worker-gateway.md) for the one-time DNS, gateway and Caddy setup. Do not create per-worker Cloudflare Service Tokens and do not add a broad Access Bypass policy.
+
+## Install a worker
+
+Clone this repository on the workstation, or use an existing checkout:
+
 ```bash
-cd worker
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-cp config.example.json config.json
-# Edit config.json with your server URL and local project roots.
-python agent.py enroll --config config.json --enrollment-token 'YOUR_ENROLLMENT_SECRET'
-python agent.py run --config config.json
+mkdir -p ~/projects
+git clone --branch feat/oho-v1-hardened https://github.com/vanhoa2191/oho.git ~/projects/oho
+cd ~/projects/oho
+bash worker/install.sh
 ```
 
-Do not check `config.json` into Git if it reveals local paths or internal hostnames.
+The script asks for a worker name, API URL, local project path and one OHO enrollment token (hidden input). It checks Python, writes private config, creates a virtual environment, installs dependencies, registers the node and offers to start the worker.
 
-The node credential is saved to `~/.config/oho/node.json` (chmod 600).
-The controller only needs outbound HTTPS; do not open inbound worker ports.
+No Cloudflare Client ID/Secret, manual JSON, manual pip commands or inbound firewall ports are needed.
 
-## Cloudflare Access (when the OHO hostname is protected)
-Create a Cloudflare Access **Service Token** and add a `Service Auth` policy to the OHO Access application that permits that token. Keep the existing email-based `Allow` policy for human dashboard access; do not add a broad `Bypass` policy.
+The enrollment token is stored as `OHO_ENROLLMENT_TOKEN` in `/opt/oho/.env` on the VPS. Retrieve it over a trusted SSH session; never put it in Git, shell command arguments, chat or screenshots.
 
-Supply the service token to the worker process through its environment, not through Git or task prompts:
+## Credentials and files
 
-```sh
-export CF_ACCESS_CLIENT_ID='your-service-token-client-id'
-export CF_ACCESS_CLIENT_SECRET='your-service-token-client-secret'
-python agent.py enroll --config config.json --enrollment-token "$OHO_ENROLLMENT_TOKEN"
-python agent.py run --config config.json
+- `~/.config/oho/config.json`: worker config, mode 0600.
+- `~/.config/oho/node.json`: individual node credential, mode 0600.
+- `~/.local/share/oho/venv`: private Python environment.
+
+After enrollment the master token is cleared from the installer process. Normal worker requests use the individual node token. If a node is lost, disable it from OHO and rotate the enrollment token if it may have leaked.
+
+## First smoke test
+
+In the dashboard, create a run for project `OHO` with task:
+
+```json
+[{"key":"hello","kind":"command","argv":["echo","OHO worker online"]}]
 ```
 
-For a long-running systemd/launchd worker, store the values in a local environment file or secret store with restrictive permissions (Linux: mode `0600` and owned by the worker account). Do not paste these values into chat or commit them. The worker adds `CF-Access-Client-Id` and `CF-Access-Client-Secret` to API calls only when both variables are set. If only one is set, it stops with a configuration error.
+Expected: task and run become `succeeded`, and task output contains `OHO worker online`. Do not add the remaining machines until this test passes.
 
 ## Execution boundaries
-- Only `pytest`, `echo`, and read-only `git` commands are currently supported.
-- Any agent execution requires approval on the controller. The Codex CLI adapter is the only implementation currently wired.
-- A coding agent may modify workspace files, but the worker **never runs shell**, git push, git merge, deploys or privileged commands itself. Open a PR through a separate reviewed pipeline.
-- Avoid sharing your everyday working directory with the worker; use a dedicated worktree.
-- A worker isn't a hardened sandbox; run it under a low-privilege account with no production secrets.
-- Risky operations need capabilities and a robust policy engine before they can be enabled.
+
+Only `echo`, `pytest` and a narrow read-only Git allowlist are available. Arbitrary shell, Git push/merge, deployment and privileged operations remain blocked. Worktree isolation is not an OS sandbox; use a low-privilege account without production secrets.
