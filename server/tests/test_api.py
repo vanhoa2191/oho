@@ -122,3 +122,13 @@ def test_reject(client):
     task = r.json()["tasks"][0]
     assert client.post(f"/api/v1/tasks/{task['id']}/reject", headers=AUTH).status_code == 200
     assert client.get("/api/v1/runs/"+r.json()["run"]["id"], headers=AUTH).json()["run"]["status"] == "failed"
+
+
+def test_model_registry_and_node_disable(client):
+    node = enroll(client, "linux1")
+    models = client.get("/api/v1/models", headers=AUTH)
+    assert models.status_code == 200
+    assert models.json()[0]["model"] == "codex"
+    assert client.post(f"/api/v1/nodes/{node['X-Node-Id']}/disable", headers=AUTH).status_code == 200
+    assert client.get("/api/v1/models", headers=AUTH).json() == []
+    assert client.post("/api/v1/nodes/claim", headers=node).status_code == 401
