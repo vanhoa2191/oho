@@ -42,7 +42,16 @@ services:
     ports:
       - "127.0.0.1:${OHO_PORT:-8788}:80"
     networks: [internal]
-  # Expose only web on loopback. Use host Caddy as the public TLS reverse proxy.
+  worker-gateway:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      api: {condition: service_healthy}
+    volumes:
+      - ./deploy/nginx/worker-gateway.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "127.0.0.1:${OHO_WORKER_PORT:-8789}:80"
+    networks: [internal]
 networks:
   internal:
 volumes:
