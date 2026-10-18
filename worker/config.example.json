@@ -1,28 +1,13 @@
 {
-  "server_url": "https://oho.example.com",
-  "name": "macbook-pro-1",
-  "platform": "macos",
-  "tags": [
-    "macos",
-    "typescript",
-    "frontend"
-  ],
-  "models": [
-    "codex"
-  ],
+  "server_url": "https://workers.tienganhcungcon.online",
+  "name": "linux-worker-1",
+  "platform": "linux",
+  "tags": ["linux", "general"],
+  "models": [],
   "project_roots": {
-    "https://github.com/vanhoa2191/oho": "/Users/yourname/projects/oho"
+    "https://github.com/vanhoa2191/oho": "/home/yourname/projects/oho"
   },
-  "allowed_commands": [
-    "pytest",
-    "echo",
-    "git"
-  ],
-  "agent_binaries": {
-    "codex": "codex",
-    "claude": "claude",
-    "gemini": "gemini",
-    "opencode": "opencode"
-  },
+  "allowed_commands": ["echo", "pytest", "git"],
+  "agent_binaries": {},
   "poll_seconds": 5
 }
