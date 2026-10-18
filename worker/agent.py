@@ -102,7 +102,26 @@ def config_load(config_path: str) -> dict:
 def headers(state: dict) -> dict:
     return {"X-Node-Id": state["node_id"], "X-Node-Token": state["node_token"]}
 
+def request_headers(extra: dict | None = None) -> dict:
+    """Add optional Cloudflare Access Service Token headers without logging secrets.
+
+    Configure both CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET in the worker
+    process environment when the OHO hostname is protected by Access. Supplying
+    only one is a configuration error; supplying neither supports local/private
+    deployments that do not require Cloudflare Access.
+    """
+    headers = dict(extra or {})
+    client_id = os.getenv("CF_ACCESS_CLIENT_ID", "").strip()
+    client_secret = os.getenv("CF_ACCESS_CLIENT_SECRET", "").strip()
+    if bool(client_id) != bool(client_secret):
+        raise WorkerError("Cloudflare Access requires both CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET")
+    if client_id and client_secret:
+        headers["CF-Access-Client-Id"] = client_id
+        headers["CF-Access-Client-Secret"] = client_secret
+    return headers
+
 def api(client: httpx.Client, method: str, path: str, **kw):
+    kw["headers"] = request_headers(kw.get("headers"))
     resp = client.request(method, path, **kw)
     resp.raise_for_status()
     return resp.json()

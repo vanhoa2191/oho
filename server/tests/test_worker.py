@@ -42,3 +42,17 @@ def test_git_command_injection_blocked():
 def test_repo_url_rejects_userinfo():
     with pytest.raises(agent.WorkerError):
         agent.validate_repo("https://user@github.com/a/b")
+
+
+def test_cloudflare_access_headers(monkeypatch):
+    monkeypatch.delenv("CF_ACCESS_CLIENT_ID", raising=False)
+    monkeypatch.delenv("CF_ACCESS_CLIENT_SECRET", raising=False)
+    assert agent.request_headers({"X-Node-Id": "node"}) == {"X-Node-Id": "node"}
+    monkeypatch.setenv("CF_ACCESS_CLIENT_ID", "client-id")
+    monkeypatch.setenv("CF_ACCESS_CLIENT_SECRET", "client-secret")
+    headers = agent.request_headers({"X-Node-Id": "node"})
+    assert headers["CF-Access-Client-Id"] == "client-id"
+    assert headers["CF-Access-Client-Secret"] == "client-secret"
+    monkeypatch.delenv("CF_ACCESS_CLIENT_SECRET")
+    with pytest.raises(agent.WorkerError):
+        agent.request_headers({})
