@@ -51,7 +51,7 @@ Read [docs/deployment.md](docs/deployment.md). Only the dashboard is bound to ho
 
 ## Safety guarantees in this release
 
-- Distinct administrator and enrollment secrets; node-specific hashed tokens stored in PostgreSQL.
+- Cloudflare Access mode verifies signed administrator JWTs and checks the exact owner email; worker enrollment and node credentials remain separate.
 - Explicit approval required for agent execution, arbitrary executables and Git write commands.
 - Execution never uses `shell=True`; worker enforces a second independent allowlist.
 - Worktree isolation to avoid modifying the operator's main project checkout.

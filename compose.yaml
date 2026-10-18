@@ -20,7 +20,12 @@ services:
     restart: unless-stopped
     environment:
       OHO_DATABASE_URL: ${OHO_DATABASE_URL:?OHO_DATABASE_URL required}
-      OHO_ADMIN_TOKEN: ${OHO_ADMIN_TOKEN:?OHO_ADMIN_TOKEN required}
+      OHO_AUTH_MODE: ${OHO_AUTH_MODE:-bearer}
+      OHO_ADMIN_TOKEN: ${OHO_ADMIN_TOKEN:-}
+      OHO_ACCESS_ISSUER: ${OHO_ACCESS_ISSUER:-}
+      OHO_ACCESS_AUD: ${OHO_ACCESS_AUD:-}
+      OHO_ADMIN_EMAIL: ${OHO_ADMIN_EMAIL:-}
+      OHO_ACCESS_JWKS_URL: ${OHO_ACCESS_JWKS_URL:-}
       OHO_ENROLLMENT_TOKEN: ${OHO_ENROLLMENT_TOKEN:?OHO_ENROLLMENT_TOKEN required}
     depends_on:
       db: {condition: service_healthy}

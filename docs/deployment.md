@@ -20,17 +20,29 @@ sudo cp .env.example .env
 sudo chmod 600 .env
 ```
 
-Generate three different high-entropy values using `openssl rand -hex 32` (two bearer tokens and DB password). Update `.env`:
+### Recommended: Cloudflare Access administrator login
+
+Follow [cloudflare-access.md](cloudflare-access.md) to obtain the team issuer, OHO application's AUD tag and exact owner email. Configure these in `.env`:
 
 ```dotenv
-OHO_ADMIN_TOKEN=<64hex-random>
-OHO_ENROLLMENT_TOKEN=<different-64hex-random>
-POSTGRES_PASSWORD=<third-64hex-random>
-OHO_DATABASE_URL=postgresql+psycopg://oho:<same-db-password>@db:5432/oho
-OHO_PORT=8788
+OHO_AUTH_MODE=cloudflare_access
+OHO_ACCESS_ISSUER=https://<team-name>.cloudflareaccess.com
+OHO_ACCESS_AUD=<exact-OHO-Access-application-AUD-tag>
+OHO_ADMIN_EMAIL=<exact-email-allowed-by-Access>
+OHO_ENROLLMENT_TOKEN=<existing-random-worker-enrollment-token>
 ```
 
-Use a URL-safe password (hex) to avoid percent-encoding issues. Keep `.env` readable only by the deployment account.
+Use actual values, without angle brackets. In this mode the browser does not send an OHO Admin Token; the API independently validates Cloudflare's signed JWT and checks the configured email. Do not set an empty or placeholder issuer, AUD tag or email. `OHO_ADMIN_TOKEN` is unused in this mode and can be removed only after the new mode passes smoke tests. Keep a secure rollback copy until then.
+
+### Local development / fallback bearer mode
+
+```dotenv
+OHO_AUTH_MODE=bearer
+OHO_ADMIN_TOKEN=<independent-random-admin-token>
+OHO_ENROLLMENT_TOKEN=<different-random-enrollment-token>
+```
+
+The password in `OHO_DATABASE_URL` must match `POSTGRES_PASSWORD`. Use URL-safe hexadecimal passwords or URL-encode reserved characters. For an existing deployment, preserve the current DB password and URL; do not regenerate them or reinitialize the volume.
 
 ## Start and verify (explicitly approved production action)
 
@@ -62,7 +74,7 @@ oho.tienganhcungcon.online {
 
 Check `caddy validate --config /etc/caddy/Caddyfile` before a carefully scheduled reload. Ensure Caddy is running on the host; if it is in Docker, `127.0.0.1` inside its container does **not** refer to the host—use a dedicated shared Docker network instead, without exposing OHO to the Internet except via TLS Caddy. Because Cloud Harness MCP is already using this domain family, **never point OHO at `mcp.tienganhcungcon.online`**.
 
-Before public access, place the dashboard behind Cloudflare Access (or a similarly strong external authentication layer); the admin bearer token alone is insufficient for high-threat deployment.
+Use Cloudflare Access with an exact-email Allow policy. In `cloudflare_access` mode, the API verifies the signed `Cf-Access-Jwt-Assertion` itself, so direct-origin requests without a valid Access JWT cannot access admin endpoints. Do not add a broad Bypass policy.
 
 ## Provision workers
 
