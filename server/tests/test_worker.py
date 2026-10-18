@@ -29,3 +29,16 @@ def test_repo_validation():
     assert agent.validate_repo("https://github.com/a/b") == "https://github.com/a/b"
     with pytest.raises(agent.WorkerError):
         agent.validate_repo("http://evil.example/a/b")
+
+def test_git_command_injection_blocked():
+    cfg={"allowed_commands": ["git"]}
+    for argv in (["git", "diff", "--ext-diff"], ["git", "show", "--format=%x00"],
+                 ["git", "status", "--porcelain", "--untracked-files=all"],
+                 ["git", "remote", "update"]):
+        with pytest.raises(agent.WorkerError):
+            agent.command_for({"kind":"command", "argv":argv}, cfg)
+    assert agent.command_for({"kind":"command", "argv":["git", "status", "--short"]}, cfg) == ["git", "status", "--short"]
+
+def test_repo_url_rejects_userinfo():
+    with pytest.raises(agent.WorkerError):
+        agent.validate_repo("https://user@github.com/a/b")

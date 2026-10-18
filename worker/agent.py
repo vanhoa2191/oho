@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 import httpx
 
 NODE_STATE = Path.home() / ".config" / "oho" / "node.json"
-READ_ONLY_GIT = {"status", "diff", "log", "show", "rev-parse", "branch", "remote", "ls-files"}
+SAFE_GIT_ARGS = {("status",), ("status", "--short"), ("log", "-5", "--oneline"), ("diff", "--stat"), ("rev-parse", "HEAD")}
 ALLOWED_CMDS = {"pytest", "echo", "git"}
 SAFE_WORKSPACE_FLAGS = {
     "codex": ["exec", "--sandbox", "workspace-write", "--skip-git-repo-check"],
@@ -41,7 +41,7 @@ def safe_path(raw: str) -> Path:
 
 def validate_repo(repo: str) -> str:
     u = urlparse(repo)
-    if u.scheme != "https" or u.hostname != "github.com" or not u.path or len(u.path.strip("/").split("/")) != 2:
+    if u.scheme != "https" or u.netloc != "github.com" or u.query or u.fragment or not u.path or len(u.path.strip("/").split("/")) != 2:
         raise WorkerError("Only HTTPS GitHub repositories are supported")
     return repo.removesuffix(".git")
 
@@ -56,10 +56,8 @@ def command_for(job: dict, config: dict) -> list[str]:
         if exe not in allowed:
             raise WorkerError(f"Executable not allowed: {exe}")
         if exe == "git":
-            if len(argv) < 2 or argv[1] not in READ_ONLY_GIT:
-                raise WorkerError("Git operation not allowlisted")
-            if any(flag.startswith("-c") or flag.startswith("--exec") or flag.startswith("--output") for flag in argv[1:]):
-                raise WorkerError("Unsafe git flag")
+            if tuple(argv[1:]) not in SAFE_GIT_ARGS:
+                raise WorkerError("Git operation or arguments not allowlisted")
         if any("\x00" in item or "\n" in item for item in argv):
             raise WorkerError("Unsafe command argument")
         return argv
@@ -93,7 +91,9 @@ def save_state(state: dict):
 def config_load(config_path: str) -> dict:
     cfg = json.loads(Path(config_path).expanduser().read_text())
     url = cfg.get("server_url", "").rstrip("/")
-    if not url.startswith("https://") and not url.startswith("http://127.0.0.1:"):
+    parsed = urlparse(url)
+    if not ((parsed.scheme == "https" and parsed.hostname and not parsed.username and not parsed.password)
+            or (parsed.scheme == "http" and parsed.hostname == "127.0.0.1")):
         raise WorkerError("Use HTTPS URL for the control plane")
     if not cfg.get("name") or not cfg.get("project_roots"):
         raise WorkerError("Configure node name and project_roots")
