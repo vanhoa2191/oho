@@ -15,4 +15,5 @@ dist/
 .idea/
 .vscode/
 *.egg-info/
+worker/config.json
 worker/.oho-node.json

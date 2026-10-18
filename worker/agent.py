@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+"""OHO node worker. Runs approved tasks in configured project directories only.
+
+Security model: non-shell subprocess; strict command allowlist; operations affecting
+remotes/deployment/privileges refused even if server-side human approval was given.
+A future signed capability protocol is required to permit privileged operations.
+"""
+import argparse
+import asyncio
+import json
+import os
+import platform
+import secrets
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+from urllib.parse import urlparse
+
+import httpx
+
+NODE_STATE = Path.home() / ".config" / "oho" / "node.json"
+READ_ONLY_GIT = {"status", "diff", "log", "show", "rev-parse", "branch", "remote", "ls-files"}
+ALLOWED_CMDS = {"pytest", "echo", "git"}
+SAFE_WORKSPACE_FLAGS = {
+    "codex": ["exec", "--sandbox", "workspace-write", "--skip-git-repo-check"],
+    # Other CLIs differ by version; only enable after explicit configuration.
+}
+
+class WorkerError(Exception):
+    pass
+
+def safe_path(raw: str) -> Path:
+    p = Path(raw).expanduser().resolve(strict=True)
+    if not p.is_dir():
+        raise WorkerError("Project root must be an existing directory")
+    if not (p / ".git").exists():
+        raise WorkerError("Project root must be a checked-out Git repository")
+    return p
+
+def validate_repo(repo: str) -> str:
+    u = urlparse(repo)
+    if u.scheme != "https" or u.hostname != "github.com" or not u.path or len(u.path.strip("/").split("/")) != 2:
+        raise WorkerError("Only HTTPS GitHub repositories are supported")
+    return repo.removesuffix(".git")
+
+def command_for(job: dict, config: dict) -> list[str]:
+    kind = job.get("kind")
+    if kind == "command":
+        argv = job.get("argv") or []
+        if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
+            raise WorkerError("Malformed argv")
+        exe = argv[0]
+        allowed = set(config.get("allowed_commands") or ["pytest", "echo", "git"]) & ALLOWED_CMDS
+        if exe not in allowed:
+            raise WorkerError(f"Executable not allowed: {exe}")
+        if exe == "git":
+            if len(argv) < 2 or argv[1] not in READ_ONLY_GIT:
+                raise WorkerError("Git operation not allowlisted")
+            if any(flag.startswith("-c") or flag.startswith("--exec") or flag.startswith("--output") for flag in argv[1:]):
+                raise WorkerError("Unsafe git flag")
+        if any("\x00" in item or "\n" in item for item in argv):
+            raise WorkerError("Unsafe command argument")
+        return argv
+    if kind == "agent":
+        model = str(job.get("model") or "")
+        prompt = str(job.get("prompt") or "")
+        if not prompt or len(prompt) > 12000:
+            raise WorkerError("Invalid prompt")
+        if not job.get("approved"):
+            raise WorkerError("Agent work requires explicit approval")
+        binary = (config.get("agent_binaries") or {}).get(model)
+        if not binary or Path(binary).name not in {"codex", "claude", "gemini", "opencode"}:
+            raise WorkerError("Adapter is not configured")
+        if model != "codex":
+            raise WorkerError("Only codex adapter implemented; other adapters require reviewed contracts")
+        return [binary, *SAFE_WORKSPACE_FLAGS[model], prompt]
+    raise WorkerError("Unsupported task kind")
+
+def load_state() -> dict:
+    if not NODE_STATE.is_file():
+        raise WorkerError("Not enrolled. Run: python agent.py enroll --config config.json")
+    return json.loads(NODE_STATE.read_text())
+
+def save_state(state: dict):
+    NODE_STATE.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = os.open(str(NODE_STATE), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(state, f)
+    os.chmod(NODE_STATE, 0o600)
+
+def config_load(config_path: str) -> dict:
+    cfg = json.loads(Path(config_path).expanduser().read_text())
+    url = cfg.get("server_url", "").rstrip("/")
+    if not url.startswith("https://") and not url.startswith("http://127.0.0.1:"):
+        raise WorkerError("Use HTTPS URL for the control plane")
+    if not cfg.get("name") or not cfg.get("project_roots"):
+        raise WorkerError("Configure node name and project_roots")
+    return cfg
+
+def headers(state: dict) -> dict:
+    return {"X-Node-Id": state["node_id"], "X-Node-Token": state["node_token"]}
+
+def api(client: httpx.Client, method: str, path: str, **kw):
+    resp = client.request(method, path, **kw)
+    resp.raise_for_status()
+    return resp.json()
+
+def enroll(cfg: dict, enrollment_token: str):
+    with httpx.Client(base_url=cfg["server_url"].rstrip("/"), timeout=20.0) as client:
+        result = api(client, "POST", "/api/v1/nodes/enroll",
+                     headers={"X-Enrollment-Token": enrollment_token},
+                     json={"name": cfg["name"], "platform": cfg.get("platform", platform.system()),
+                           "tags": cfg.get("tags", []), "models": cfg.get("models", [])})
+        save_state(result)
+        print("Enrolled node:", cfg["name"], result["node_id"])
+
+def isolated_worktree(root: Path, job: dict) -> Path:
+    """Create/reuse a per-task git worktree for safe branch isolation."""
+    task_id = str(job["id"])
+    run_id = str(job["run_id"])
+    if not all(ch.isalnum() or ch == "-" for ch in task_id + run_id):
+        raise WorkerError("Invalid task identity")
+    path = root.parent / ".oho-worktrees" / root.name / task_id
+    branch = f"oho/{run_id[:8]}-{task_id[:8]}"
+    if path.exists():
+        if not (path / ".git").exists():
+            raise WorkerError("Stale non-Git worktree path; manual inspection required")
+        return path
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    result = subprocess.run(["git", "-C", str(root), "worktree", "add",
+                             "-b", branch, str(path), "HEAD"],
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30, check=False)
+    if result.returncode != 0:
+        raise WorkerError("Cannot create dedicated worktree: " + result.stderr[-400:])
+    return path
+
+def run_job(job: dict, cfg: dict, state: dict, client: httpx.Client):
+    token = job["lease_token"]
+    task_id = job["id"]
+    payload = {"lease_token": token}
+    project_roots = {validate_repo(k): safe_path(v) for k, v in cfg["project_roots"].items()}
+    repo = validate_repo(job["repo_url"])
+    if repo not in project_roots:
+        raise WorkerError(f"Repository not configured: {repo}")
+    root = isolated_worktree(project_roots[repo], job)
+    cmd = command_for(job, cfg)
+    api(client, "POST", f"/api/v1/nodes/tasks/{task_id}/start", headers=headers(state), json=payload)
+    deadline = time.monotonic() + int(job.get("timeout_seconds", 900))
+    proc = subprocess.Popen(cmd, cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, start_new_session=True, env={
+                                "PATH": os.environ.get("PATH", ""),
+                                "HOME": os.environ.get("HOME", ""),
+                                "LANG": "C.UTF-8",
+                                "CI": "true",
+                            })
+    output = bytearray()
+    import threading
+    def consume():
+        assert proc.stdout is not None
+        for chunk in iter(lambda: proc.stdout.read(4096), b""):
+            if len(output) < 38000:
+                output.extend(chunk[:38000-len(output)])
+    reader = threading.Thread(target=consume, daemon=True)
+    reader.start()
+    timed_out = False
+    while proc.poll() is None:
+        if time.monotonic() > deadline:
+            timed_out = True
+            os.killpg(proc.pid, signal.SIGKILL)
+            break
+        time.sleep(15)
+        try:
+            api(client, "POST", f"/api/v1/nodes/tasks/{task_id}/renew",
+                headers=headers(state), json=payload)
+        except (httpx.HTTPError, KeyError):
+            # Lease is no longer valid: stop immediately.
+            os.killpg(proc.pid, signal.SIGKILL)
+            timed_out = True
+            break
+    proc.wait()
+    reader.join(timeout=3)
+    return {"lease_token": token, "success": proc.returncode == 0 and not timed_out,
+            "exit_code": proc.returncode, "output": ("Worktree: " + str(root) + "\n" + output.decode(errors="replace"))[-38000:]}
+
+def daemon(cfg: dict):
+    state = load_state()
+    with httpx.Client(base_url=cfg["server_url"].rstrip("/"), timeout=25.0) as client:
+        while True:
+            try:
+                api(client, "POST", "/api/v1/nodes/heartbeat",
+                    headers=headers(state),
+                    json={"tags": cfg.get("tags", []), "models": cfg.get("models", []),
+                          "platform": cfg.get("platform", platform.system())})
+                result = api(client, "POST", "/api/v1/nodes/claim", headers=headers(state))
+                job = result.get("task")
+                if job:
+                    print("Received task:", job.get("id"), flush=True)
+                    try:
+                        answer = run_job(job, cfg, state, client)
+                    except Exception as ex:
+                        answer = {"lease_token": job["lease_token"], "success": False,
+                                  "exit_code": -1, "output": f"Worker rejected task: {ex}"}
+                    api(client, "POST", f"/api/v1/nodes/tasks/{job['id']}/complete",
+                        headers=headers(state), json=answer)
+                else:
+                    time.sleep(max(2, min(int(cfg.get("poll_seconds", 5)), 60)))
+            except (httpx.HTTPError, WorkerError) as ex:
+                print("Worker warning:", str(ex)[:200], file=sys.stderr, flush=True)
+                time.sleep(10)
+
+def main():
+    parser = argparse.ArgumentParser(description="OHO worker")
+    parser.add_argument("action", choices=["enroll", "run"])
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--enrollment-token", default="")
+    args = parser.parse_args()
+    cfg = config_load(args.config)
+    if args.action == "enroll":
+        token = args.enrollment_token or os.getenv("OHO_ENROLLMENT_TOKEN", "")
+        if not token:
+            raise WorkerError("Enrollment token missing")
+        enroll(cfg, token)
+    else:
+        daemon(cfg)
+
+if __name__ == "__main__":
+    main()

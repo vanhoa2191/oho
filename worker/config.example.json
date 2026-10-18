@@ -1,0 +1,28 @@
+{
+  "server_url": "https://oho.example.com",
+  "name": "macbook-pro-1",
+  "platform": "macos",
+  "tags": [
+    "macos",
+    "typescript",
+    "frontend"
+  ],
+  "models": [
+    "codex"
+  ],
+  "project_roots": {
+    "https://github.com/vanhoa2191/oho": "/Users/yourname/projects/oho"
+  },
+  "allowed_commands": [
+    "pytest",
+    "echo",
+    "git"
+  ],
+  "agent_binaries": {
+    "codex": "codex",
+    "claude": "claude",
+    "gemini": "gemini",
+    "opencode": "opencode"
+  },
+  "poll_seconds": 5
+}
