@@ -11,7 +11,10 @@ type Event = {id:string;kind:string;detail:string;created_at:string;task_id:stri
 type Overview = {projects:number;runs:number;nodes:number;pending_approvals:number};
 
 function App() {
-  const [token,setToken]=useState('');
+  const [token,setToken]=useState(()=>{
+    try { return window.sessionStorage.getItem('oho-admin-token') ?? ''; }
+    catch { return ''; }
+  });
   const [inputToken,setInputToken]=useState('');
   const [active,setActive]=useState<'overview'|'runs'|'nodes'|'approvals'|'events'|'projects'>('overview');
   const [overview,setOverview]=useState<Overview>({projects:0,runs:0,nodes:0,pending_approvals:0});
@@ -35,7 +38,15 @@ function App() {
     headers.set('Authorization', 'Bearer '+providedToken);
     if(init.body)headers.set('Content-Type','application/json');
     const resp=await fetch('/api/v1'+path,{...init,headers,cache:'no-store'});
-    if(!resp.ok) {const msg=await resp.text();throw Error(resp.status+' '+msg.slice(0,250));}
+    if(!resp.ok) {
+      const msg=await resp.text();
+      if(resp.status===401) {
+        try { window.sessionStorage.removeItem('oho-admin-token'); } catch {}
+        setToken('');
+        setError('Phiên đăng nhập hết hạn hoặc token không hợp lệ. Vui lòng đăng nhập lại.');
+      }
+      throw Error(resp.status+' '+msg.slice(0,250));
+    }
     return await resp.json() as T;
   }
   async function load(auth=token){
@@ -64,13 +75,13 @@ function App() {
     try{await request('/runs',{method:'POST',body:JSON.stringify({...newRun,tasks:JSON.parse(newRun.tasks)})});setShowRun(false);await load()}catch(err){setError(String(err))}finally{setBusy(false)}
   }
   async function viewRun(id:string){try{setDetail(await request('/runs/'+id));setSelected(id)}catch(err){setError(String(err))}}
-  if(!token)return <main className="login"><div className="login-card"><div className="brand-symbol"><Layers3 size={32}/></div><h1>OHO <span>Console</span></h1><p>Orchestration Hub — secure multi-agent control plane.</p><form onSubmit={e=>{e.preventDefault();if(inputToken.length>=24){setToken(inputToken);setInputToken('')}}}><label>Administrator access token</label><input type="password" placeholder="Enter your admin token" value={inputToken} onChange={e=>setInputToken(e.target.value)} autoComplete="off" required/><button className="primary" type="submit"><Lock size={16}/> Unlock console <ArrowRight size={16}/></button></form><small>Token is kept only in this browser tab's memory, not local storage.</small></div></main>;
+  if(!token)return <main className="login"><div className="login-card"><div className="brand-symbol"><Layers3 size={32}/></div><h1>OHO <span>Console</span></h1><p>Orchestration Hub — secure multi-agent control plane.</p>{error&&<div className="error login-error" role="alert"><span>{error}</span><button type="button" onClick={()=>setError('')}><X size={16}/></button></div>}<form onSubmit={e=>{e.preventDefault();if(inputToken.length>=24){try{window.sessionStorage.setItem('oho-admin-token',inputToken)}catch{}setError('');setToken(inputToken);setInputToken('')}}}><label>Administrator access token</label><input type="password" placeholder="Enter your admin token" value={inputToken} onChange={e=>setInputToken(e.target.value)} autoComplete="current-password" required/><button className="primary" type="submit"><Lock size={16}/> Unlock console <ArrowRight size={16}/></button></form><small>Phiên được giữ trong tab hiện tại và vẫn tồn tại khi tải lại trang. Nhấn Lock console để đăng xuất; đóng tab sẽ kết thúc phiên.</small></div></main>;
 
   const nav=[['overview','Overview',Activity],['runs','Task runs',GitBranch],['nodes','Worker nodes',Server],['approvals','Approvals',ShieldCheck],['projects','Projects',Layers3],['events','Audit trail',CircleHelp]] as const;
   return <div className="shell">
     <aside className="sidebar"><div className="brand"><div className="brand-symbol"><Layers3 size={23}/></div><span>OHO <b>Control</b></span></div><div className="side-label">WORKSPACE</div>
       <nav>{nav.map(([key,label,Icon])=><button key={key} className={active===key?'selected':''} onClick={()=>{setActive(key);setSelected(null);setDetail(null)}}><Icon size={18}/>{label}{key==='approvals'&&overview.pending_approvals>0&&<span className="count">{overview.pending_approvals}</span>}</button>)}</nav>
-      <div className="sidebar-bottom"><div className="service"><span className="online-dot"/> Control plane connected</div><button onClick={()=>{setToken('');setDetail(null)}}><Lock size={15}/> Lock console</button></div>
+      <div className="sidebar-bottom"><div className="service"><span className="online-dot"/> Control plane connected</div><button onClick={()=>{try{window.sessionStorage.removeItem('oho-admin-token')}catch{}setToken('');setInputToken('');setError('');setDetail(null)}}><Lock size={15}/> Lock console</button></div>
     </aside>
     <div className="main"><header className="topbar"><span>OHO / {nav.find(n=>n[0]===active)?.[1]}</span><div><span className="live">● Live</span><button title="Refresh" className="icon-button" onClick={()=>void load()}><RefreshCw size={17}/></button></div></header>
       <section className="content">
