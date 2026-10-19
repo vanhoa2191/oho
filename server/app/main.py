@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from .db import Base, engine, get_db, utcnow
 from .models import Event, Node, Project, Run, Task
 from .schemas import CompleteIn, EnrollIn, HeartbeatIn, LeaseIn, ProjectIn, RunIn
-from .scheduler import claim, maintain, record, refresh_run, risk_of
+from .scheduler import TARGET_NODE_PREFIX, claim, maintain, record, refresh_run, risk_of
 from .security import require_config, admin, enrollment, token_hash, authenticate_node
 
 @asynccontextmanager
@@ -36,9 +36,15 @@ def node_out(n: Node):
             "last_seen": n.last_seen.isoformat() + "Z"}
 
 def task_out(t: Task):
+    target_node = next(
+        (tag[len(TARGET_NODE_PREFIX):] for tag in t.required_tags
+         if tag.startswith(TARGET_NODE_PREFIX)),
+        None,
+    )
+    visible_tags = [tag for tag in t.required_tags if not tag.startswith(TARGET_NODE_PREFIX)]
     return {"id": t.id, "run_id": t.run_id, "key": t.key, "kind": t.kind, "argv": t.argv,
-            "model": t.model, "depends_on": t.depends_on, "required_tags": t.required_tags,
-            "risk": t.risk, "status": t.status, "approved": bool(t.approved_at),
+            "model": t.model, "depends_on": t.depends_on, "required_tags": visible_tags,
+            "target_node": target_node, "risk": t.risk, "status": t.status, "approved": bool(t.approved_at),
             "approved_by": t.approved_by, "assigned_node_id": t.assigned_node_id,
             "attempts": t.attempts, "max_attempts": t.max_attempts,
             "output": t.output, "exit_code": t.exit_code,
@@ -157,20 +163,30 @@ def runs(db: Session = Depends(get_db)):
 def create_run(payload: RunIn, db: Session = Depends(get_db)):
     if not db.get(Project, payload.project_id):
         raise HTTPException(404, "Project not found")
+    for item in payload.tasks:
+        if item.target_node:
+            target = db.scalar(select(Node).where(Node.name == item.target_node))
+            if not target:
+                raise HTTPException(422, f"Unknown target_node: {item.target_node}")
+            if not target.enabled:
+                raise HTTPException(409, f"Target node is disabled: {item.target_node}")
     run = Run(project_id=payload.project_id, title=payload.title)
     db.add(run)
     db.flush()
     for item in payload.tasks:
         risk = risk_of(item.kind, item.argv, item.risk)
+        required_tags = list(item.required_tags)
+        if item.target_node:
+            required_tags.append(f"{TARGET_NODE_PREFIX}{item.target_node}")
         task = Task(run_id=run.id, key=item.key, kind=item.kind, argv=item.argv,
                     prompt=item.prompt, model=item.model,
-                    depends_on=item.depends_on, required_tags=item.required_tags,
+                    depends_on=item.depends_on, required_tags=required_tags,
                     risk=risk, max_attempts=item.max_attempts,
                     timeout_seconds=item.timeout_seconds,
                     status="awaiting_approval" if risk != "normal" else "pending")
         db.add(task)
         db.flush()
-        record(db, task, "task_created", f"risk={risk}")
+        record(db, task, "task_created", f"risk={risk}" + (f", target_node={item.target_node}" if item.target_node else ""))
     db.commit()
     return {"run": run_out(run), "tasks": [task_out(t) for t in db.scalars(select(Task).where(Task.run_id == run.id)).all()]}
 
