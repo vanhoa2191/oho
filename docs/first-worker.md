@@ -19,7 +19,7 @@ cd ~/projects/oho
 bash worker/install.sh
 ```
 
-The script asks for a node name (press Enter to accept the suggestion), worker API URL (Enter accepts `https://workers.tienganhcungcon.online`), local project path (Enter accepts the checkout), and one OHO enrollment token (hidden input).
+The installer requires Python 3.12 or 3.13 (3.13 recommended with current dependency pins). The script asks for a node name (press Enter to accept the suggestion), worker API URL (Enter accepts `https://workers.tienganhcungcon.online`), local project path (Enter accepts the checkout), and one OHO enrollment token (hidden input).
 
 It automatically checks Python/Git, writes private configuration, installs dependencies and registers the node. On macOS it offers to install a background LaunchAgent by default; on Linux it offers a foreground smoke test. No Cloudflare Client ID/Secret, manual JSON editing or manual pip setup. For Mac service controls and recovery, see [macOS worker guide](macos-worker.md).
 
