@@ -95,3 +95,25 @@ Do not use `--yes` for unattended cleanup until the behavior has been observed o
 ## macOS worker service
 
 On macOS, `worker/install.sh` offers to install a user LaunchAgent at `~/Library/LaunchAgents/com.tienganhcungcon.oho-worker.plist`. It starts at user login and restarts on failure. Manage it with `launchctl print gui/$(id -u)/com.tienganhcungcon.oho-worker` or `launchctl kickstart -k gui/$(id -u)/com.tienganhcungcon.oho-worker`. See [docs/macos-worker.md](docs/macos-worker.md) for install, logs, recovery and limitations.
+
+
+## Exact worker routing and fleet checks
+
+The dashboard's **Worker nodes** page shows each registered node, enabled state, platform, models, tags, last heartbeat and online/offline status. The online indicator uses a 90-second heartbeat threshold.
+
+To route a task to one exact worker, set `target_node` to the registered node name in that task's JSON. For example:
+
+```json
+[
+  {
+    "key": "mac-smoke",
+    "kind": "command",
+    "argv": ["echo", "OHO exact node route"],
+    "target_node": "mac-worker-1"
+  }
+]
+```
+
+The server rejects unknown or disabled target nodes. The scheduler will only lease the task to that exact node; other workers cannot claim it. The node must still satisfy any `required_tags` and model capability constraints. If the target node is offline, the task remains queued until it returns or an operator changes the task/run; it will not silently run on another machine.
+
+For normal parallel work, omit `target_node` and use `required_tags` / model requirements to allow any eligible worker. Never use task output alone to prove which node executed it; check the task's `claimed` audit event and local worktree path as well.
