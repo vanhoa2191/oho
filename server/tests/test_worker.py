@@ -288,3 +288,19 @@ def test_available_models_only_advertises_installed_profiles(tmp_path):
     }}
     assert agent.available_models(config) == ["codex"]
 
+def test_command_task_environment_does_not_require_agent_profile(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-leak")
+    env = agent.agent_process_env({"kind": "command", "argv": ["echo", "hello"]}, {})
+    assert env["CI"] == "true"
+    assert "OPENAI_API_KEY" not in env
+    assert "OPENCODE_PERMISSION" not in env
+
+
+@pytest.mark.parametrize("argument", ["line1\nline2", "nul\x00byte"])
+def test_command_arguments_reject_control_characters(argument):
+    with pytest.raises(agent.WorkerError):
+        agent.command_for(
+            {"kind": "command", "argv": ["echo", argument]},
+            {"allowed_commands": ["echo"]},
+        )
+
