@@ -27,7 +27,7 @@ See [docs/cloudflare-access.md](docs/cloudflare-access.md) and [docs/worker-gate
 2. Run `docker compose up -d --build`.
 3. In local bearer mode, open `http://127.0.0.1:8788` on the host (or through a trusted SSH tunnel) and enter `OHO_ADMIN_TOKEN`. In production Access mode, use the protected hostname.
 4. Create a project and start with a harmless `echo` task.
-5. Follow [docs/first-worker.md](docs/first-worker.md) to onboard one worker with a single enrollment token.
+5. Follow [docs/first-worker.md](docs/first-worker.md) to onboard one worker with a single enrollment token. For macOS background service setup and recovery, see [docs/macos-worker.md](docs/macos-worker.md).
 
 ## Local development & validation
 
@@ -90,3 +90,8 @@ systemctl --user status oho-worker --no-pager
 ```
 
 Do not use `--yes` for unattended cleanup until the behavior has been observed on real tasks. The script does not run automatically.
+
+
+## macOS worker service
+
+On macOS, `worker/install.sh` offers to install a user LaunchAgent at `~/Library/LaunchAgents/com.tienganhcungcon.oho-worker.plist`. It starts at user login and restarts on failure. Manage it with `launchctl print gui/$(id -u)/com.tienganhcungcon.oho-worker` or `launchctl kickstart -k gui/$(id -u)/com.tienganhcungcon.oho-worker`. See [docs/macos-worker.md](docs/macos-worker.md) for install, logs, recovery and limitations.
