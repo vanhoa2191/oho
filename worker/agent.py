@@ -7,6 +7,7 @@ A future signed capability protocol is required to permit privileged operations.
 """
 import argparse
 import asyncio
+import fcntl
 import json
 import os
 import platform
@@ -15,6 +16,7 @@ import signal
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -155,15 +157,60 @@ def isolated_worktree(root: Path, job: dict) -> Path:
         raise WorkerError("Cannot create dedicated worktree: " + result.stderr[-400:])
     return path
 
-def run_job(job: dict, cfg: dict, state: dict, client: httpx.Client):
-    token = job["lease_token"]
-    task_id = job["id"]
-    payload = {"lease_token": token}
+def configured_root(job: dict, cfg: dict) -> Path:
     project_roots = {validate_repo(k): safe_path(v) for k, v in cfg["project_roots"].items()}
     repo = validate_repo(job["repo_url"])
     if repo not in project_roots:
         raise WorkerError(f"Repository not configured: {repo}")
-    root = isolated_worktree(project_roots[repo], job)
+    return project_roots[repo]
+
+
+def task_lock_path(root: Path, job: dict) -> Path:
+    task_id = str(job["id"])
+    if not task_id or not all(ch.isalnum() or ch == "-" for ch in task_id):
+        raise WorkerError("Invalid task identity for lock")
+    base = root.parent / ".oho-worktrees" / root.name
+    if base.parent.is_symlink() or base.is_symlink():
+        raise WorkerError("Worktree base must not be a symlink")
+    lock_dir = base / ".locks"
+    if lock_dir.is_symlink():
+        raise WorkerError("Worktree lock directory must not be a symlink")
+    return lock_dir / f"{task_id}.lock"
+
+
+@contextmanager
+def task_lock(root: Path, job: dict):
+    """Hold an OS lock until the server acknowledges task completion.
+
+    The GC process takes the same non-blocking lock before inspecting/removing a
+    worktree. flock is released automatically if the worker process crashes.
+    """
+    lock_path = task_lock_path(root, job)
+    fd = None
+    try:
+        lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(str(lock_path), flags, 0o600)
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError as ex:
+        if fd is not None:
+            os.close(fd)
+        raise WorkerError(f"Cannot acquire task worktree lock: {ex}") from ex
+    try:
+        yield lock_path
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def run_job(job: dict, cfg: dict, state: dict, client: httpx.Client):
+    token = job["lease_token"]
+    task_id = job["id"]
+    payload = {"lease_token": token}
+    root = isolated_worktree(configured_root(job, cfg), job)
     cmd = command_for(job, cfg)
     api(client, "POST", f"/api/v1/nodes/tasks/{task_id}/start", headers=headers(state), json=payload)
     deadline = time.monotonic() + int(job.get("timeout_seconds", 900))
@@ -216,13 +263,33 @@ def daemon(cfg: dict):
                 job = result.get("task")
                 if job:
                     print("Received task:", job.get("id"), flush=True)
-                    try:
-                        answer = run_job(job, cfg, state, client)
-                    except Exception as ex:
-                        answer = {"lease_token": job["lease_token"], "success": False,
-                                  "exit_code": -1, "output": f"Worker rejected task: {ex}"}
-                    api(client, "POST", f"/api/v1/nodes/tasks/{job['id']}/complete",
-                        headers=headers(state), json=answer)
+                    root = configured_root(job, cfg)
+                    with task_lock(root, job):
+                        try:
+                            answer = run_job(job, cfg, state, client)
+                        except Exception as ex:
+                            answer = {"lease_token": job["lease_token"], "success": False,
+                                      "exit_code": -1, "output": f"Worker rejected task: {ex}"}
+                        # Keep the task lock until the API acknowledges completion.
+                        # Retry transient failures so GC cannot remove the worktree
+                        # while the server may still consider the lease active.
+                        while True:
+                            try:
+                                api(client, "POST", f"/api/v1/nodes/tasks/{job['id']}/complete",
+                                    headers=headers(state), json=answer)
+                                break
+                            except httpx.HTTPStatusError as ex:
+                                if ex.response.status_code < 500:
+                                    print("Task completion rejected:", ex.response.status_code,
+                                          file=sys.stderr, flush=True)
+                                    break
+                                print("Task completion server error; retrying in 5s",
+                                      file=sys.stderr, flush=True)
+                                time.sleep(5)
+                            except httpx.TransportError:
+                                print("Task completion connection failed; retrying in 5s",
+                                      file=sys.stderr, flush=True)
+                                time.sleep(5)
                 else:
                     time.sleep(max(2, min(int(cfg.get("poll_seconds", 5)), 60)))
             except (httpx.HTTPError, WorkerError) as ex:
