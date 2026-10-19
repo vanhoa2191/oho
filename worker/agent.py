@@ -13,6 +13,7 @@ import os
 import platform
 import secrets
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -64,14 +65,22 @@ AUTH_ENV_BY_ADAPTER = {
 
 
 def available_models(config: dict) -> list[str]:
-    """Return only model profiles this worker can actually dispatch."""
+    """Advertise only profiles whose CLI executable is present on this worker."""
     profiles = config.get("agent_profiles") or {}
     if profiles:
-        return sorted(profiles.keys())
-    models = config.get("models") or []
-    if models:
-        return list(models)
-    return sorted((config.get("agent_binaries") or {}).keys())
+        return sorted(
+            name for name, profile in profiles.items()
+            if isinstance(profile, dict)
+            and isinstance(profile.get("binary"), str)
+            and bool(shutil.which(profile["binary"]))
+        )
+    binaries = config.get("agent_binaries") or {}
+    if binaries:
+        return sorted(
+            name for name, binary in binaries.items()
+            if isinstance(binary, str) and bool(shutil.which(binary))
+        )
+    return []
 
 
 def agent_profile(model: str, config: dict) -> dict:
