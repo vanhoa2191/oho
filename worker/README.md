@@ -64,3 +64,51 @@ Every task uses an isolated worktree. After updating the checkout to the current
 This is dry-run by default and waits at least 24 hours. Only clean worktrees with an unlocked task lock, an OHO-generated branch, no tracked/untracked/ignored changes, and a branch already merged into the configured project root are eligible. Active tasks, dirty worktrees, unmerged code and older worktrees that lack lock markers are skipped.
 
 After reviewing the output, use `--apply` to request interactive confirmation and remove eligible worktrees/merged branches. Do not schedule unattended cleanup. Do not delete skipped worktrees manually without checking task state and preserving any code changes.
+
+
+## Coding-agent profiles (pilot)
+
+Command tasks (`echo`, `pytest`, and the restricted Git read-only commands) do not require a model profile. For agent tasks, configure each worker's local `~/.config/oho/config.json` with `agent_profiles`. Profile keys are the model names sent in OHO task JSON; the `model` field inside each profile is the exact provider/CLI model identifier.
+
+Example shape (replace binary paths and model IDs with values verified on that machine):
+
+```json
+{
+  "agent_profiles": {
+    "codex-default": {
+      "adapter": "codex",
+      "binary": "/absolute/path/to/codex",
+      "model": "provider-supported-codex-model"
+    },
+    "claude-sonnet": {
+      "adapter": "claude",
+      "binary": "/absolute/path/to/claude",
+      "model": "sonnet",
+      "max_turns": 5
+    },
+    "gemini-flash": {
+      "adapter": "gemini",
+      "binary": "/absolute/path/to/gemini",
+      "model": "provider-supported-gemini-model"
+    },
+    "deepseek-opencode": {
+      "adapter": "opencode",
+      "binary": "/absolute/path/to/opencode",
+      "model": "provider/model-from-opencode-models",
+      "credential_env": ["DEEPSEEK_API_KEY"]
+    }
+  }
+}
+```
+
+Use `which codex`, `which claude`, `which gemini`, or `which opencode` to find an executable, then prefer its absolute path. A profile is advertised to OHO only when its CLI binary is present. Use `opencode models` to find the exact provider/model ID for OpenCode.
+
+Security behavior in this pilot:
+- Every `kind: "agent"` task requires explicit OHO approval.
+- Codex uses its workspace-write sandbox.
+- Claude runs non-interactively with edit approval mode and the Bash tool explicitly disallowed.
+- Gemini uses its sandbox and `auto_edit` mode, never YOLO mode.
+- OpenCode receives a restrictive permission map allowing file navigation/editing but denying Bash, web access, delegated tasks and external directories.
+- The worker process receives only environment variables explicitly listed in that profile's adapter-specific `credential_env`. Do not put secret values in `config.json`; store them in the machine's secret environment or use the CLI's own login mechanism.
+
+These are initial adapter contracts, not proof that every CLI/model combination works on every machine. Before enabling a profile fleet-wide, run one approved low-risk agent task on that exact host and verify the output, exit code and worktree. The first Claude/Gemini/OpenCode profiles are intentionally more restricted than Codex and may not run tests through shell tools; do not loosen permissions globally just to make a task pass.
