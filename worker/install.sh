@@ -14,7 +14,7 @@ trap cleanup EXIT
 command -v git >/dev/null 2>&1 || fail "Git is required."
 command -v python3 >/dev/null 2>&1 || fail "Python 3.12+ is required."
 [[ -f "$WORKER_SCRIPT" ]] || fail "Run this script from an OHO repository checkout."
-python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,12) else 1)' || fail "Install Python 3.12 or newer and retry."
+python3 -c 'import sys; sys.exit(0 if (3,12) <= sys.version_info[:2] <= (3,13) else 1)' || fail "This worker dependency set supports Python 3.12 or 3.13. Install Python 3.13 (recommended) and retry."
 case "$(uname -s)" in
   Linux) PLATFORM_NAME="linux"; DEFAULT_TAGS="linux,general" ;;
   Darwin) PLATFORM_NAME="macos"; DEFAULT_TAGS="macos,general" ;;
@@ -70,7 +70,15 @@ path.write_text(json.dumps(config, indent=2) + "\n")
 path.chmod(0o600)
 print("Private worker configuration saved.")
 PY
-if [[ ! -x "$VENV_DIR/bin/python" ]]; then python3 -m venv "$VENV_DIR"; fi
+if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+  if [[ "$PLATFORM_NAME" == "macos" ]]; then
+    # Homebrew interpreter paths can change across upgrades; copies also avoid
+    # resolving the venv's python symlink back to the base interpreter.
+    python3 -m venv --copies "$VENV_DIR"
+  else
+    python3 -m venv "$VENV_DIR"
+  fi
+fi
 "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check --quiet -r "$ROOT/worker/requirements.txt"
 printf '\nRegistering worker...\n'
 export OHO_ENROLLMENT_TOKEN
@@ -97,7 +105,7 @@ if [[ "$PLATFORM_NAME" == "macos" ]]; then
       --config "$CONFIG_PATH" \
       --working-directory "$ROOT" \
       --log-directory "$LOG_DIR" \
-      --path-env "${PATH:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
+      --path-env "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/.local/bin"
     plutil -lint "$PLIST_PATH" >/dev/null
     launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
     launchctl kickstart "$SERVICE_TARGET"
