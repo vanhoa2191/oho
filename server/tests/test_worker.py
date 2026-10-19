@@ -1,3 +1,4 @@
+import json
 import importlib.util
 from pathlib import Path
 import pytest
@@ -201,3 +202,89 @@ def test_launchd_plist_rejects_empty_path(tmp_path):
             log_directory=str(tmp_path / "logs"),
             path_env="",
         )
+
+def _fake_cli(tmp_path, name):
+    executable = tmp_path / name
+    executable.write_text("#!/bin/sh\\nexit 0\\n")
+    executable.chmod(0o700)
+    return str(executable)
+
+
+def test_agent_profiles_build_scoped_provider_commands(tmp_path):
+    codex = _fake_cli(tmp_path, "codex")
+    claude = _fake_cli(tmp_path, "claude")
+    gemini = _fake_cli(tmp_path, "gemini")
+    opencode = _fake_cli(tmp_path, "opencode")
+    config = {
+        "agent_profiles": {
+            "codex-gpt": {"adapter": "codex", "binary": codex, "model": "gpt-model"},
+            "claude-sonnet": {"adapter": "claude", "binary": claude, "model": "sonnet", "max_turns": 4},
+            "gemini-flash": {"adapter": "gemini", "binary": gemini, "model": "flash-model"},
+            "deepseek-via-opencode": {
+                "adapter": "opencode", "binary": opencode,
+                "model": "deepseek/provider-model", "credential_env": ["DEEPSEEK_API_KEY"],
+            },
+        }
+    }
+    def job(model):
+        return {"kind": "agent", "model": model, "prompt": "Edit only the current worktree", "approved": True}
+
+    codex_cmd = agent.command_for(job("codex-gpt"), config)
+    assert codex_cmd[:2] == [codex, "exec"]
+    assert "--sandbox" in codex_cmd and "workspace-write" in codex_cmd
+    assert "--model" in codex_cmd and "gpt-model" in codex_cmd
+
+    claude_cmd = agent.command_for(job("claude-sonnet"), config)
+    assert claude_cmd[0] == claude
+    assert "--permission-mode" in claude_cmd and "acceptEdits" in claude_cmd
+    assert "--disallowedTools" in claude_cmd and "Bash" in claude_cmd
+    assert "--dangerously-skip-permissions" not in claude_cmd
+
+    gemini_cmd = agent.command_for(job("gemini-flash"), config)
+    assert gemini_cmd[0] == gemini
+    assert "--sandbox" in gemini_cmd and "--approval-mode" in gemini_cmd
+    assert "auto_edit" in gemini_cmd and "--yolo" not in gemini_cmd
+
+    open_cmd = agent.command_for(job("deepseek-via-opencode"), config)
+    assert open_cmd[:3] == [opencode, "run", "--format"]
+    assert "deepseek/provider-model" in open_cmd
+    assert "--auto" not in open_cmd
+
+
+def test_agent_profiles_only_pass_selected_provider_credentials(monkeypatch, tmp_path):
+    opencode = _fake_cli(tmp_path, "opencode")
+    config = {"agent_profiles": {"deepseek": {
+        "adapter": "opencode", "binary": opencode,
+        "model": "deepseek/provider-model", "credential_env": ["DEEPSEEK_API_KEY"],
+    }}}
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "must-not-leak-to-opencode")
+    env = agent.agent_process_env(
+        {"model": "deepseek", "kind": "agent", "prompt": "test", "approved": True},
+        config,
+    )
+    assert env["DEEPSEEK_API_KEY"] == "test-deepseek-secret"
+    assert "ANTHROPIC_API_KEY" not in env
+    permissions = json.loads(env["OPENCODE_PERMISSION"])
+    assert permissions["edit"] == "allow"
+    assert permissions["bash"] == "deny"
+    assert permissions["*"] == "deny"
+
+
+def test_agent_profile_validation_rejects_unscoped_credentials(tmp_path):
+    binary = _fake_cli(tmp_path, "claude")
+    config = {"agent_profiles": {"claude": {
+        "adapter": "claude", "binary": binary, "credential_env": ["DEEPSEEK_API_KEY"],
+    }}}
+    with pytest.raises(agent.WorkerError):
+        agent.validate_agent_profiles(config)
+
+
+def test_available_models_only_advertises_installed_profiles(tmp_path):
+    codex = _fake_cli(tmp_path, "codex")
+    config = {"agent_profiles": {
+        "codex": {"adapter": "codex", "binary": codex},
+        "claude": {"adapter": "claude", "binary": str(tmp_path / "missing-claude")},
+    }}
+    assert agent.available_models(config) == ["codex"]
+
