@@ -1,6 +1,6 @@
 # OHO worker — simplified onboarding
 
-Supported: Linux and macOS, Python 3.12+, Git and outbound HTTPS.
+Supported: Linux and macOS, Python 3.12 or 3.13 (3.13 recommended for current pinned dependencies), Git and outbound HTTPS.
 
 ## One-time server setup
 
