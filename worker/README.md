@@ -19,7 +19,7 @@ cd ~/projects/oho
 bash worker/install.sh
 ```
 
-The script asks for a worker name, API URL, local project path and one OHO enrollment token (hidden input). It checks Python, writes private config, creates a virtual environment, installs dependencies, registers the node and offers to start the worker.
+The script asks for a worker name, API URL, local project path and one OHO enrollment token (hidden input). It checks Python, writes private config, creates a virtual environment, installs dependencies and registers the node. On macOS, it offers to install and start a background LaunchAgent by default; on Linux, it offers to run the worker in the foreground for the first smoke test. See [the macOS LaunchAgent guide](../docs/macos-worker.md).
 
 No Cloudflare Client ID/Secret, manual JSON, manual pip commands or inbound firewall ports are needed.
 
@@ -31,7 +31,11 @@ The enrollment token is stored as `OHO_ENROLLMENT_TOKEN` in `/opt/oho/.env` on t
 - `~/.config/oho/node.json`: individual node credential, mode 0600.
 - `~/.local/share/oho/venv`: private Python environment.
 
-After enrollment the master token is cleared from the installer process. Normal worker requests use the individual node token. If a node is lost, disable it from OHO and rotate the enrollment token if it may have leaked.
+After enrollment the master token is cleared from the installer process. Normal worker requests use the individual node token. The installer refuses to enroll again if `~/.config/oho/node.json` already exists; update/restart the existing worker instead of rerunning enrollment. If a node is lost, disable it from OHO and rotate the enrollment token if it may have leaked.
+
+### macOS service management
+
+The installer creates `~/Library/LaunchAgents/com.tienganhcungcon.oho-worker.plist` and logs under `~/Library/Logs/`. Check status with `launchctl print gui/$(id -u)/com.tienganhcungcon.oho-worker`. Restart after a code update with `launchctl kickstart -k gui/$(id -u)/com.tienganhcungcon.oho-worker`. The LaunchAgent starts when the user logs in; it is not a pre-login system daemon.
 
 ## First smoke test
 
