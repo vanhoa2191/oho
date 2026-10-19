@@ -47,6 +47,74 @@ def validate_repo(repo: str) -> str:
         raise WorkerError("Only HTTPS GitHub repositories are supported")
     return repo.removesuffix(".git")
 
+AUTH_ENV_BY_ADAPTER = {
+    "codex": {"OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_HOME"},
+    "claude": {"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDE_CONFIG_DIR"},
+    "gemini": {
+        "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_CLOUD_LOCATION", "GOOGLE_GENAI_USE_VERTEXAI",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+    },
+    "opencode": {
+        "DEEPSEEK_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY", "GOOGLE_API_KEY", "OPENCODE_CONFIG",
+        "OPENCODE_CONFIG_DIR",
+    },
+}
+
+
+def available_models(config: dict) -> list[str]:
+    """Return only model profiles this worker can actually dispatch."""
+    profiles = config.get("agent_profiles") or {}
+    if profiles:
+        return sorted(profiles.keys())
+    models = config.get("models") or []
+    if models:
+        return list(models)
+    return sorted((config.get("agent_binaries") or {}).keys())
+
+
+def agent_profile(model: str, config: dict) -> dict:
+    profile = (config.get("agent_profiles") or {}).get(model)
+    if profile is not None:
+        if not isinstance(profile, dict):
+            raise WorkerError(f"Invalid agent profile: {model}")
+        return profile
+    # Backward-compatible Codex-only configuration used by existing workers.
+    binary = (config.get("agent_binaries") or {}).get(model)
+    if model == "codex" and binary:
+        return {"adapter": "codex", "binary": binary}
+    raise WorkerError(f"Adapter profile is not configured: {model}")
+
+
+def validate_agent_profiles(config: dict) -> None:
+    profiles = config.get("agent_profiles") or {}
+    if not isinstance(profiles, dict):
+        raise WorkerError("agent_profiles must be an object")
+    for name, profile in profiles.items():
+        if not isinstance(name, str) or not name or len(name) > 60 or any(ord(c) < 32 for c in name):
+            raise WorkerError("Invalid agent profile name")
+        if not isinstance(profile, dict):
+            raise WorkerError(f"Invalid agent profile: {name}")
+        adapter = profile.get("adapter")
+        binary = profile.get("binary")
+        if adapter not in {"codex", "claude", "gemini", "opencode"}:
+            raise WorkerError(f"Unsupported adapter for profile: {name}")
+        if not isinstance(binary, str) or not binary or Path(binary).name != adapter:
+            raise WorkerError(f"Profile {name} binary must resolve to the {adapter} executable")
+        model_id = profile.get("model", "")
+        if not isinstance(model_id, str) or len(model_id) > 120 or any(ord(c) < 32 for c in model_id):
+            raise WorkerError(f"Invalid provider model for profile: {name}")
+        max_turns = profile.get("max_turns", 5)
+        if adapter == "claude" and (not isinstance(max_turns, int) or not 1 <= max_turns <= 20):
+            raise WorkerError(f"Claude max_turns for {name} must be 1-20")
+        credential_env = profile.get("credential_env", [])
+        if not isinstance(credential_env, list) or not all(isinstance(k, str) for k in credential_env):
+            raise WorkerError(f"credential_env for {name} must be a list of environment variable names")
+        if not set(credential_env).issubset(AUTH_ENV_BY_ADAPTER[adapter]):
+            raise WorkerError(f"credential_env contains a variable not allowed for adapter {adapter}")
+
+
 def command_for(job: dict, config: dict) -> list[str]:
     kind = job.get("kind")
     if kind == "command":
@@ -60,7 +128,7 @@ def command_for(job: dict, config: dict) -> list[str]:
         if exe == "git":
             if tuple(argv[1:]) not in SAFE_GIT_ARGS:
                 raise WorkerError("Git operation or arguments not allowlisted")
-        if any("\x00" in item or "\n" in item for item in argv):
+        if any("\\x00" in item or "\\n" in item for item in argv):
             raise WorkerError("Unsafe command argument")
         return argv
     if kind == "agent":
@@ -70,13 +138,74 @@ def command_for(job: dict, config: dict) -> list[str]:
             raise WorkerError("Invalid prompt")
         if not job.get("approved"):
             raise WorkerError("Agent work requires explicit approval")
-        binary = (config.get("agent_binaries") or {}).get(model)
-        if not binary or Path(binary).name not in {"codex", "claude", "gemini", "opencode"}:
-            raise WorkerError("Adapter is not configured")
-        if model != "codex":
-            raise WorkerError("Only codex adapter implemented; other adapters require reviewed contracts")
-        return [binary, *SAFE_WORKSPACE_FLAGS[model], prompt]
+        profile = agent_profile(model, config)
+        adapter = profile.get("adapter")
+        binary = profile.get("binary")
+        if not isinstance(binary, str) or Path(binary).name != adapter:
+            raise WorkerError("Agent profile executable does not match its adapter")
+        provider_model = str(profile.get("model") or "")
+        model_args = ["--model", provider_model] if provider_model else []
+
+        if adapter == "codex":
+            return [binary, *SAFE_WORKSPACE_FLAGS["codex"], *model_args, prompt]
+        if adapter == "claude":
+            # Edit-capable, non-interactive mode. Bash is explicitly disabled.
+            return [
+                binary, "--print", "--output-format", "text",
+                "--permission-mode", "acceptEdits",
+                "--max-turns", str(profile.get("max_turns", 5)),
+                "--disallowedTools", "Bash",
+                *model_args, prompt,
+            ]
+        if adapter == "gemini":
+            # Sandbox and auto_edit permit file edits but do not auto-approve all tools.
+            return [
+                binary, "--sandbox", "--approval-mode", "auto_edit",
+                "--output-format", "text", *model_args,
+                "--prompt", prompt,
+            ]
+        if adapter == "opencode":
+            if not provider_model:
+                raise WorkerError("OpenCode profile requires provider/model in its model field")
+            return [binary, "run", "--format", "json", *model_args, prompt]
+        raise WorkerError("Unsupported agent adapter")
     raise WorkerError("Unsupported task kind")
+
+
+def agent_process_env(job: dict, config: dict) -> dict[str, str]:
+    """Build a minimal environment and pass only credentials for the chosen adapter."""
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": os.environ.get("HOME", ""),
+        "LANG": "C.UTF-8",
+        "CI": "true",
+        "PYTHONUNBUFFERED": "1",
+    }
+    profile = agent_profile(str(job.get("model") or ""), config)
+    adapter = profile["adapter"]
+    for key in profile.get("credential_env", []):
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
+    if adapter == "opencode":
+        # Initial pilot is edit-only: do not auto-approve arbitrary shell commands.
+        env["OPENCODE_PERMISSION"] = json.dumps({
+            "*": "deny",
+            "read": "allow",
+            "edit": "allow",
+            "glob": "allow",
+            "grep": "allow",
+            "list": "allow",
+            "lsp": "allow",
+            "bash": "deny",
+            "webfetch": "deny",
+            "websearch": "deny",
+            "task": "deny",
+            "external_directory": "deny",
+            "skill": "deny",
+            "question": "deny",
+        }, separators=(",", ":"))
+    return env
 
 def load_state() -> dict:
     if not NODE_STATE.is_file():
@@ -92,6 +221,7 @@ def save_state(state: dict):
 
 def config_load(config_path: str) -> dict:
     cfg = json.loads(Path(config_path).expanduser().read_text())
+    validate_agent_profiles(cfg)
     url = cfg.get("server_url", "").rstrip("/")
     parsed = urlparse(url)
     if not ((parsed.scheme == "https" and parsed.hostname and not parsed.username and not parsed.password)
@@ -133,7 +263,7 @@ def enroll(cfg: dict, enrollment_token: str):
         result = api(client, "POST", "/api/v1/nodes/enroll",
                      headers={"X-Enrollment-Token": enrollment_token},
                      json={"name": cfg["name"], "platform": cfg.get("platform", platform.system()),
-                           "tags": cfg.get("tags", []), "models": cfg.get("models", [])})
+                           "tags": cfg.get("tags", []), "models": available_models(cfg)})
         save_state(result)
         print("Enrolled node:", cfg["name"], result["node_id"])
 
@@ -215,12 +345,7 @@ def run_job(job: dict, cfg: dict, state: dict, client: httpx.Client):
     api(client, "POST", f"/api/v1/nodes/tasks/{task_id}/start", headers=headers(state), json=payload)
     deadline = time.monotonic() + int(job.get("timeout_seconds", 900))
     proc = subprocess.Popen(cmd, cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, start_new_session=True, env={
-                                "PATH": os.environ.get("PATH", ""),
-                                "HOME": os.environ.get("HOME", ""),
-                                "LANG": "C.UTF-8",
-                                "CI": "true",
-                            })
+                            stderr=subprocess.STDOUT, start_new_session=True, env=agent_process_env(job, cfg))
     output = bytearray()
     import threading
     def consume():
@@ -257,7 +382,7 @@ def daemon(cfg: dict):
             try:
                 api(client, "POST", "/api/v1/nodes/heartbeat",
                     headers=headers(state),
-                    json={"tags": cfg.get("tags", []), "models": cfg.get("models", []),
+                    json={"tags": cfg.get("tags", []), "models": available_models(cfg),
                           "platform": cfg.get("platform", platform.system())})
                 result = api(client, "POST", "/api/v1/nodes/claim", headers=headers(state))
                 job = result.get("task")
