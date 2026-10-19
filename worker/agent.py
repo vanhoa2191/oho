@@ -137,7 +137,7 @@ def command_for(job: dict, config: dict) -> list[str]:
         if exe == "git":
             if tuple(argv[1:]) not in SAFE_GIT_ARGS:
                 raise WorkerError("Git operation or arguments not allowlisted")
-        if any("\\x00" in item or "\\n" in item for item in argv):
+        if any("\x00" in item or "\n" in item for item in argv):
             raise WorkerError("Unsafe command argument")
         return argv
     if kind == "agent":
@@ -190,6 +190,10 @@ def agent_process_env(job: dict, config: dict) -> dict[str, str]:
         "CI": "true",
         "PYTHONUNBUFFERED": "1",
     }
+    # Command tasks use only the base environment and must not require an
+    # agent profile. Only agent tasks receive explicitly allowlisted credentials.
+    if job.get("kind") != "agent":
+        return env
     profile = agent_profile(str(job.get("model") or ""), config)
     adapter = profile["adapter"]
     for key in profile.get("credential_env", []):
