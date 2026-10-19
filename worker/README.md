@@ -46,3 +46,17 @@ Expected: task and run become `succeeded`, and task output contains `OHO worker 
 ## Execution boundaries
 
 Only `echo`, `pytest` and a narrow read-only Git allowlist are available. Arbitrary shell, Git push/merge, deployment and privileged operations remain blocked. Worktree isolation is not an OS sandbox; use a low-privilege account without production secrets.
+
+
+## Safe worktree cleanup
+
+Every task uses an isolated worktree. After updating the checkout to the current worker code and restarting the worker service, inspect cleanup candidates:
+
+```bash
+~/.local/share/oho/venv/bin/python ~/projects/oho/worker/gc.py \
+  --config ~/.config/oho/config.json
+```
+
+This is dry-run by default and waits at least 24 hours. Only clean worktrees with an unlocked task lock, an OHO-generated branch, no tracked/untracked/ignored changes, and a branch already merged into the configured project root are eligible. Active tasks, dirty worktrees, unmerged code and older worktrees that lack lock markers are skipped.
+
+After reviewing the output, use `--apply` to request interactive confirmation and remove eligible worktrees/merged branches. Do not schedule unattended cleanup. Do not delete skipped worktrees manually without checking task state and preserving any code changes.
