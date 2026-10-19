@@ -22,7 +22,18 @@ class TaskIn(BaseModel):
     model: str = Field(default="", max_length=60)
     depends_on: list[str] = Field(default_factory=list, max_length=50)
     required_tags: list[str] = Field(default_factory=list, max_length=20)
+    target_node: str | None = Field(default=None, min_length=2, max_length=100,
+                                    pattern=r"^[A-Za-z0-9._-]+$")
     risk: Literal["normal", "elevated", "merge", "deploy"] = "normal"
+
+    @field_validator("required_tags")
+    @classmethod
+    def reject_reserved_routing_tags(cls, values: list[str]) -> list[str]:
+        if any(value.startswith("__oho_target_node__:") for value in values):
+            raise ValueError("reserved OHO routing tags cannot be supplied in required_tags")
+        if any(not value or len(value) > 100 for value in values):
+            raise ValueError("required_tags entries must contain 1-100 characters")
+        return values
     max_attempts: int = Field(default=2, ge=1, le=5)
     timeout_seconds: int = Field(default=900, ge=30, le=7200)
 
