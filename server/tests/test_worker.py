@@ -170,6 +170,27 @@ def test_launchd_plist_runs_worker_and_restarts(tmp_path):
     assert stat.S_IMODE(plist_path.stat().st_mode) == 0o600
 
 
+def test_launchd_preserves_venv_python_symlink(tmp_path):
+    base_python = tmp_path / "homebrew" / "bin" / "python3.13"
+    base_python.parent.mkdir(parents=True)
+    base_python.write_text("#!/bin/sh\\nexit 0\\n")
+    venv_python = tmp_path / "venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.symlink_to(base_python)
+
+    document = launchd.build_plist(
+        python_path=str(venv_python),
+        worker_script=str(tmp_path / "repo" / "worker" / "agent.py"),
+        config_path=str(tmp_path / "config" / "oho" / "config.json"),
+        working_directory=str(tmp_path / "repo"),
+        log_directory=str(tmp_path / "logs"),
+        path_env="/opt/homebrew/bin:/usr/bin:/bin",
+    )
+
+    # Keep the venv path, not the resolved Homebrew interpreter target.
+    assert document["ProgramArguments"][0] == str(venv_python)
+
+
 def test_launchd_plist_rejects_empty_path(tmp_path):
     with pytest.raises(ValueError):
         launchd.build_plist(
