@@ -215,8 +215,10 @@ def main():
                         print(f"NOTICE: could not remove lock marker {marker}", file=sys.stderr)
         if not results:
             print("No OHO task worktrees found.")
-        print(f"Summary: {eligible} eligible in dry-run; {removed} removed.")
-        if not args.apply:
+        if args.apply:
+            print(f"Summary: {removed} worktrees removed.")
+        else:
+            print(f"Summary: {eligible} eligible for cleanup; {len(results) - eligible} skipped.")
             print("Dry-run only. Review the list, then rerun with --apply to confirm removals.")
         return 0
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as ex:
