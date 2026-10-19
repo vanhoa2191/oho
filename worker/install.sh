@@ -77,6 +77,7 @@ config = {
     "project_roots": {os.environ["OHO_REPO_URL"]: os.environ["OHO_PROJECT_ROOT"]},
     "allowed_commands": ["echo", "pytest", "git"],
     "agent_binaries": {},
+    "agent_profiles": {},
     "poll_seconds": 5
 }
 path = Path.home() / ".config" / "oho" / "config.json"
