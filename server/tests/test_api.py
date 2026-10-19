@@ -132,3 +132,68 @@ def test_model_registry_and_node_disable(client):
     assert client.post(f"/api/v1/nodes/{node['X-Node-Id']}/disable", headers=AUTH).status_code == 200
     assert client.get("/api/v1/models", headers=AUTH).json() == []
     assert client.post("/api/v1/nodes/claim", headers=node).status_code == 401
+
+def test_target_node_routes_only_to_named_worker(client):
+    pid = project(client)
+    mac_headers = enroll(client, "mac1")
+    linux_response = client.post("/api/v1/nodes/enroll", headers=ENROLL, json={
+        "name": "linux2", "models": ["codex"], "tags": ["linux", "general"],
+        "platform": "linux"})
+    assert linux_response.status_code == 200, linux_response.text
+    linux_data = linux_response.json()
+    linux_headers = {
+        "X-Node-Id": linux_data["node_id"],
+        "X-Node-Token": linux_data["node_token"],
+    }
+
+    response = client.post("/api/v1/runs", headers=AUTH, json={
+        "project_id": pid, "title": "exact node route", "tasks": [{
+            "key": "targeted", "argv": ["echo", "targeted"],
+            "required_tags": ["linux"], "target_node": "linux2"
+        }]
+    })
+    assert response.status_code == 200, response.text
+    task = response.json()["tasks"][0]
+    assert task["target_node"] == "linux2"
+    assert task["required_tags"] == ["linux"]
+
+    # A different node must not claim the task even if it otherwise polls normally.
+    assert client.post("/api/v1/nodes/claim", headers=mac_headers).json()["task"] is None
+    claimed = client.post("/api/v1/nodes/claim", headers=linux_headers).json()["task"]
+    assert claimed["id"] == task["id"]
+    assert claimed["key"] == "targeted"
+
+
+def test_target_node_rejects_unknown_or_disabled_nodes(client):
+    pid = project(client)
+    unknown = client.post("/api/v1/runs", headers=AUTH, json={
+        "project_id": pid, "title": "unknown target", "tasks": [{
+            "key": "targeted", "argv": ["echo", "targeted"],
+            "target_node": "not-enrolled"
+        }]
+    })
+    assert unknown.status_code == 422
+    assert "Unknown target_node" in unknown.text
+
+    node_headers = enroll(client, "disabled-node")
+    node_id = node_headers["X-Node-Id"]
+    assert client.post(f"/api/v1/nodes/{node_id}/disable", headers=AUTH).status_code == 200
+    disabled = client.post("/api/v1/runs", headers=AUTH, json={
+        "project_id": pid, "title": "disabled target", "tasks": [{
+            "key": "targeted", "argv": ["echo", "targeted"],
+            "target_node": "disabled-node"
+        }]
+    })
+    assert disabled.status_code == 409
+
+
+def test_reserved_routing_tags_cannot_be_forged(client):
+    pid = project(client)
+    response = client.post("/api/v1/runs", headers=AUTH, json={
+        "project_id": pid, "title": "reserved route", "tasks": [{
+            "key": "targeted", "argv": ["echo", "targeted"],
+            "required_tags": ["__oho_target_node__:mac1"]
+        }]
+    })
+    assert response.status_code == 422
+
