@@ -59,3 +59,34 @@ npm run build
 - Worktree isolation is not an OS sandbox. Use a dedicated unprivileged worker account without production secrets.
 - `create_all()` handles initial schema but not future migrations. Introduce Alembic before upgrading schemas in an existing installation.
 - Failover is best-effort and subject to local worktree availability and approval policy.
+
+
+## Safe worktree cleanup
+
+The worker keeps one Git worktree per task so that task branches remain isolated. To inspect old worktrees without deleting anything:
+
+```sh
+~/.local/share/oho/venv/bin/python ~/projects/oho/worker/gc.py \
+  --config ~/.config/oho/config.json
+```
+
+The garbage collector is **dry-run by default** and uses a 24-hour minimum age. It only considers worktrees with a trusted task lock marker, the exact OHO-generated branch pattern, no tracked/untracked/ignored changes, no active lock, and a branch already merged into the project root. Legacy worktrees without lock markers, active tasks, dirty worktrees and unmerged branches are preserved for manual review.
+
+After reviewing the dry-run output, remove eligible worktrees with an explicit confirmation:
+
+```sh
+~/.local/share/oho/venv/bin/python ~/projects/oho/worker/gc.py \
+  --config ~/.config/oho/config.json --apply
+```
+
+Update the worker checkout and restart its service before relying on task locks:
+
+```sh
+cd ~/projects/oho
+git status --short
+git pull --ff-only origin feat/oho-v1-hardened
+systemctl --user restart oho-worker
+systemctl --user status oho-worker --no-pager
+```
+
+Do not use `--yes` for unattended cleanup until the behavior has been observed on real tasks. The script does not run automatically.
