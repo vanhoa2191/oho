@@ -1,4 +1,4 @@
-# Connect the first OHO worker
+# Connect the first OHO worker (Linux or macOS)
 
 This guide assumes the one-time worker gateway is configured. If it is not, complete [worker-gateway.md](worker-gateway.md) on the VPS first. The dashboard remains behind Cloudflare Access; worker machines do not need Cloudflare Client ID/Secret.
 
@@ -8,9 +8,9 @@ In the dashboard, open **Projects → Add project** and enter:
 - Name: `OHO`
 - GitHub URL: `https://github.com/vanhoa2191/oho`
 
-## 2. Clone on one Linux desktop
+## 2. Clone on one Linux or macOS desktop
 
-Do not use the VPS as the first worker. On one Linux desktop, run:
+Do not use the VPS as the first worker. On one Linux or macOS desktop, run:
 
 ```bash
 mkdir -p ~/projects
@@ -21,7 +21,7 @@ bash worker/install.sh
 
 The script asks for a node name (press Enter to accept the suggestion), worker API URL (Enter accepts `https://workers.tienganhcungcon.online`), local project path (Enter accepts the checkout), and one OHO enrollment token (hidden input).
 
-It automatically checks Python/Git, writes private configuration, installs dependencies, registers the node and offers to start the worker. No Cloudflare Client ID/Secret, manual JSON editing or manual pip setup.
+It automatically checks Python/Git, writes private configuration, installs dependencies and registers the node. On macOS it offers to install a background LaunchAgent by default; on Linux it offers a foreground smoke test. No Cloudflare Client ID/Secret, manual JSON editing or manual pip setup. For Mac service controls and recovery, see [macOS worker guide](macos-worker.md).
 
 Get the enrollment token from `OHO_ENROLLMENT_TOKEN` in `/opt/oho/.env` through your trusted SSH session. Do not put it in logs, screenshots or chat.
 
@@ -56,6 +56,9 @@ Expected: task and run become `succeeded`; task output contains `OHO worker onli
 - If the task stays pending, check that the project URL matches the configured repository and the node is online.
 - If worktree creation fails, inspect Git status and permissions; do not delete worktrees blindly.
 
-## Stop
+## Service behavior
 
-Press Ctrl+C after the smoke test. Configure a systemd/launchd service only after the foreground run is successful.
+- Linux: keep the foreground worker for the initial test, then configure the user `systemd` service as described in the deployment conversation/runbook.
+- macOS: accept the LaunchAgent option during installation. Check it with `launchctl print gui/$(id -u)/com.tienganhcungcon.oho-worker`; logs are in `~/Library/Logs/oho-worker.log` and `~/Library/Logs/oho-worker-error.log`.
+
+Do not rerun enrollment on an already enrolled machine. Each computer must have a unique node name and its own `~/.config/oho/node.json`.
