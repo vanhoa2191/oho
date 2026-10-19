@@ -9,5 +9,6 @@
   },
   "allowed_commands": ["echo", "pytest", "git"],
   "agent_binaries": {},
+  "agent_profiles": {},
   "poll_seconds": 5
 }
