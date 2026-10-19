@@ -7,6 +7,7 @@ from .db import utcnow
 from .models import Event, Node, Run, Task
 
 LIVE = {"pending", "awaiting_approval", "leased", "running"}
+TARGET_NODE_PREFIX = "__oho_target_node__:"
 RISK_RANK = {"normal": 0, "elevated": 1, "merge": 2, "deploy": 3}
 ELEVATED_EXECUTABLES = {"docker", "sudo", "su", "rm", "sh", "bash", "zsh", "powershell", "pwsh",
     "kubectl", "terraform", "systemctl", "ssh", "scp", "chmod", "chown",
@@ -75,7 +76,18 @@ def claim(db: Session, node: Node) -> dict | None:
         .with_for_update(skip_locked=True)
     ).all()
     for task in tasks:
-        if not set(task.required_tags).issubset(set(node.tags)):
+        target_node = next(
+            (tag[len(TARGET_NODE_PREFIX):] for tag in task.required_tags
+             if tag.startswith(TARGET_NODE_PREFIX)),
+            None,
+        )
+        if target_node is not None and node.name != target_node:
+            continue
+        required_tags = {
+            tag for tag in task.required_tags
+            if not tag.startswith(TARGET_NODE_PREFIX)
+        }
+        if not required_tags.issubset(set(node.tags)):
             continue
         if task.kind == "agent" and task.model not in node.models:
             continue
