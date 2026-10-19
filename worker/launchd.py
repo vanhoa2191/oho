@@ -23,7 +23,10 @@ def build_plist(
     path_env: str,
 ) -> dict:
     """Return a minimal, non-secret LaunchAgent configuration."""
-    python = str(Path(python_path).expanduser().resolve())
+    # Preserve the venv interpreter path as written. Resolving symlinks here
+    # can point LaunchAgent at Homebrew's base interpreter, which then ignores
+    # the venv site-packages and fails to import installed dependencies.
+    python = os.path.abspath(os.path.expanduser(python_path))
     script = str(Path(worker_script).expanduser().resolve())
     config = str(Path(config_path).expanduser().resolve())
     workdir = str(Path(working_directory).expanduser().resolve())
