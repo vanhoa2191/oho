@@ -20,6 +20,19 @@ case "$(uname -s)" in
   Darwin) PLATFORM_NAME="macos"; DEFAULT_TAGS="macos,general" ;;
   *) fail "Supported worker operating systems are Linux and macOS." ;;
 esac
+
+# Never enroll the same local node twice. Its node credential is shared by all
+# processes for this account, so an existing credential requires an upgrade,
+# not another enrollment.
+if [[ -f "$CONFIG_DIR/node.json" ]]; then
+  fail "This account already has an enrolled OHO node at $CONFIG_DIR/node.json. Do not enroll again; update the checkout and restart the existing worker service."
+fi
+if [[ "$PLATFORM_NAME" == "macos" ]]; then
+  SERVICE_TARGET="gui/$(id -u)/com.tienganhcungcon.oho-worker"
+  if launchctl print "$SERVICE_TARGET" >/dev/null 2>&1; then
+    fail "The OHO LaunchAgent is already loaded. Do not create a second worker; inspect it with launchctl print $SERVICE_TARGET."
+  fi
+fi
 DEFAULT_NAME="$(hostname -s 2>/dev/null || hostname)"
 DEFAULT_NAME="$(printf '%s' "$DEFAULT_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | cut -c1-48)"
 printf '\nOHO worker setup — one enrollment token; no Cloudflare service token.\n'
@@ -64,6 +77,44 @@ export OHO_ENROLLMENT_TOKEN
 "$VENV_DIR/bin/python" "$WORKER_SCRIPT" enroll --config "$CONFIG_PATH"
 unset OHO_ENROLLMENT_TOKEN
 printf '\nWorker registered. Node credentials are stored with mode 0600.\n'
-read -r -p "Start worker now for the smoke test? [Y/n]: " START_NOW
+
+if [[ "$PLATFORM_NAME" == "macos" ]]; then
+  read -r -p "Install and start a background macOS LaunchAgent now? [Y/n]: " INSTALL_SERVICE
+  if [[ ! "$INSTALL_SERVICE" =~ ^[Nn]$ ]]; then
+    LABEL="com.tienganhcungcon.oho-worker"
+    SERVICE_TARGET="gui/$(id -u)/$LABEL"
+    LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
+    LOG_DIR="$HOME/Library/Logs"
+    PLIST_PATH="$LAUNCH_AGENTS/$LABEL.plist"
+    mkdir -p "$LAUNCH_AGENTS" "$LOG_DIR"
+    if launchctl print "$SERVICE_TARGET" >/dev/null 2>&1; then
+      fail "LaunchAgent is already loaded; refusing to start a duplicate."
+    fi
+    python3 "$ROOT/worker/launchd.py" write \
+      --output "$PLIST_PATH" \
+      --python "$VENV_DIR/bin/python" \
+      --script "$WORKER_SCRIPT" \
+      --config "$CONFIG_PATH" \
+      --working-directory "$ROOT" \
+      --log-directory "$LOG_DIR" \
+      --path-env "${PATH:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
+    plutil -lint "$PLIST_PATH" >/dev/null
+    launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
+    launchctl kickstart "$SERVICE_TARGET"
+    sleep 2
+    if ! launchctl print "$SERVICE_TARGET" 2>/dev/null | grep -q 'state = running'; then
+      echo "LaunchAgent did not reach running state. Inspect logs:"
+      echo "  $LOG_DIR/oho-worker-error.log"
+      exit 1
+    fi
+    printf '\nOHO LaunchAgent is running. It will restart on failure and start at user login.\n'
+    printf 'Status: launchctl print %q\n' "$SERVICE_TARGET"
+    printf 'Logs:   %q and %q\n' "$LOG_DIR/oho-worker.log" "$LOG_DIR/oho-worker-error.log"
+    printf 'Stop:   launchctl bootout %q\n' "$SERVICE_TARGET"
+    exit 0
+  fi
+fi
+
+read -r -p "Start worker in this terminal for the smoke test? [Y/n]: " START_NOW
 if [[ ! "$START_NOW" =~ ^[Nn]$ ]]; then exec "$VENV_DIR/bin/python" "$WORKER_SCRIPT" run --config "$CONFIG_PATH"; fi
 printf '\nTo start later:\n  %q %q --config %q\n' "$VENV_DIR/bin/python" "$WORKER_SCRIPT" "$CONFIG_PATH"
