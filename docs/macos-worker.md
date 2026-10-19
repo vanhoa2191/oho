@@ -4,7 +4,7 @@ This guide configures one Mac as an OHO worker. It uses the restricted worker ho
 
 ## Prerequisites
 
-- macOS with Python 3.12+ and Git installed.
+- macOS with Python 3.12 or 3.13 and Git installed. Python 3.13 is recommended for the currently pinned dependencies.
 - Outbound HTTPS access to `workers.tienganhcungcon.online`.
 - The one-time worker gateway is already deployed.
 - A local Git checkout of the OHO repository.
@@ -31,7 +31,7 @@ On macOS, the installer offers to install and start a user LaunchAgent. Accept t
 - Standard log: `~/Library/Logs/oho-worker.log`
 - Error log: `~/Library/Logs/oho-worker-error.log`
 
-The LaunchAgent uses absolute paths, starts at user login, and restarts on process failure. It does not store the enrollment token or any Cloudflare secret in the plist.
+The LaunchAgent preserves the virtualenv interpreter path (it does not resolve the venv Python symlink to the Homebrew base interpreter), uses a clean deterministic PATH, starts at user login, and restarts on process failure. It does not store the enrollment token or any Cloudflare secret in the plist.
 
 ## Check status and logs
 
@@ -75,7 +75,7 @@ launchctl bootstrap gui/$(id -u) \
 launchctl kickstart -k gui/$(id -u)/com.tienganhcungcon.oho-worker
 ```
 
-The LaunchAgent runs in the logged-in user's GUI session. After a reboot, it starts when that user logs in; it is not a pre-login system daemon.
+The installer creates macOS virtual environments with `--copies` and accepts only Python 3.12 or 3.13 for the currently pinned dependencies. The LaunchAgent runs in the logged-in user's GUI session. After a reboot, it starts when that user logs in; it is not a pre-login system daemon.
 
 ## Update the worker checkout
 
