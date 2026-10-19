@@ -12,9 +12,23 @@ fail() { printf 'OHO setup failed: %s\n' "$*" >&2; exit 1; }
 cleanup() { unset OHO_ENROLLMENT_TOKEN 2>/dev/null || true; }
 trap cleanup EXIT
 command -v git >/dev/null 2>&1 || fail "Git is required."
-command -v python3 >/dev/null 2>&1 || fail "Python 3.12+ is required."
 [[ -f "$WORKER_SCRIPT" ]] || fail "Run this script from an OHO repository checkout."
-python3 -c 'import sys; sys.exit(0 if (3,12) <= sys.version_info[:2] <= (3,13) else 1)' || fail "This worker dependency set supports Python 3.12 or 3.13. Install Python 3.13 (recommended) and retry."
+
+# Prefer Python 3.13, then 3.12, then python3 if it is in the supported range.
+# This avoids accidentally selecting a newer Homebrew Python with no compatible
+# pydantic-core wheel for the currently pinned worker dependencies.
+PYTHON_BIN=""
+for candidate in python3.13 python3.12 python3; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    candidate_path="$(command -v "$candidate")"
+    if "$candidate_path" -c 'import sys; sys.exit(0 if (3,12) <= sys.version_info[:2] <= (3,13) else 1)' 2>/dev/null; then
+      PYTHON_BIN="$candidate_path"
+      break
+    fi
+  fi
+done
+[[ -n "$PYTHON_BIN" ]] || fail "This worker dependency set supports Python 3.12 or 3.13. Install Python 3.13 (recommended) and retry."
+printf 'Using Python: %s\n' "$("$PYTHON_BIN" --version 2>&1)"
 case "$(uname -s)" in
   Linux) PLATFORM_NAME="linux"; DEFAULT_TAGS="linux,general" ;;
   Darwin) PLATFORM_NAME="macos"; DEFAULT_TAGS="macos,general" ;;
@@ -51,7 +65,7 @@ read -r -s -p "OHO enrollment token: " OHO_ENROLLMENT_TOKEN; printf '\n'
 [[ "${#OHO_ENROLLMENT_TOKEN}" -ge 24 ]] || fail "Enrollment token is missing or too short."
 export OHO_SERVER_URL="$SERVER_URL" OHO_NODE_NAME="$NODE_NAME" OHO_PLATFORM_NAME="$PLATFORM_NAME" OHO_PROJECT_ROOT="$PROJECT_ROOT" OHO_REPO_URL="$REPO_URL" OHO_DEFAULT_TAGS="$DEFAULT_TAGS"
 mkdir -p "$CONFIG_DIR" "$(dirname "$VENV_DIR")"; chmod 700 "$CONFIG_DIR"
-python3 - <<'PY'
+"$PYTHON_BIN" - <<'PY'
 import json, os
 from pathlib import Path
 config = {
@@ -74,9 +88,9 @@ if [[ ! -x "$VENV_DIR/bin/python" ]]; then
   if [[ "$PLATFORM_NAME" == "macos" ]]; then
     # Homebrew interpreter paths can change across upgrades; copies also avoid
     # resolving the venv's python symlink back to the base interpreter.
-    python3 -m venv --copies "$VENV_DIR"
+    "$PYTHON_BIN" -m venv --copies "$VENV_DIR"
   else
-    python3 -m venv "$VENV_DIR"
+    "$PYTHON_BIN" -m venv "$VENV_DIR"
   fi
 fi
 "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check --quiet -r "$ROOT/worker/requirements.txt"
@@ -98,7 +112,7 @@ if [[ "$PLATFORM_NAME" == "macos" ]]; then
     if launchctl print "$SERVICE_TARGET" >/dev/null 2>&1; then
       fail "LaunchAgent is already loaded; refusing to start a duplicate."
     fi
-    python3 "$ROOT/worker/launchd.py" write \
+    "$PYTHON_BIN" "$ROOT/worker/launchd.py" write \
       --output "$PLIST_PATH" \
       --python "$VENV_DIR/bin/python" \
       --script "$WORKER_SCRIPT" \
