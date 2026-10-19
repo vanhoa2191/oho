@@ -133,3 +133,50 @@ def test_gc_apply_removes_only_clean_merged_worktree_and_branch(tmp_path):
     assert not worktree.exists()
     listed = _git(root, "branch", "--list", branch).stdout.strip()
     assert listed == ""
+
+
+import plistlib
+import stat
+
+launchd_module_path = Path(__file__).resolve().parents[2] / "worker" / "launchd.py"
+launchd_spec = importlib.util.spec_from_file_location("worker_launchd", launchd_module_path)
+launchd = importlib.util.module_from_spec(launchd_spec)
+launchd_spec.loader.exec_module(launchd)
+
+
+def test_launchd_plist_runs_worker_and_restarts(tmp_path):
+    plist_path = tmp_path / "LaunchAgents" / "com.tienganhcungcon.oho-worker.plist"
+    launchd.write_plist(
+        str(plist_path),
+        python_path=str(tmp_path / "venv" / "bin" / "python"),
+        worker_script=str(tmp_path / "repo" / "worker" / "agent.py"),
+        config_path=str(tmp_path / "config" / "oho" / "config.json"),
+        working_directory=str(tmp_path / "repo"),
+        log_directory=str(tmp_path / "logs"),
+        path_env="/opt/homebrew/bin:/usr/bin:/bin",
+    )
+    with plist_path.open("rb") as stream:
+        document = plistlib.load(stream)
+    assert document["Label"] == "com.tienganhcungcon.oho-worker"
+    assert document["ProgramArguments"] == [
+        str(tmp_path / "venv" / "bin" / "python"),
+        str(tmp_path / "repo" / "worker" / "agent.py"),
+        "run", "--config", str(tmp_path / "config" / "oho" / "config.json"),
+    ]
+    assert document["RunAtLoad"] is True
+    assert document["KeepAlive"] is True
+    assert document["ThrottleInterval"] == 10
+    assert "CF_ACCESS_CLIENT_SECRET" not in document.get("EnvironmentVariables", {})
+    assert stat.S_IMODE(plist_path.stat().st_mode) == 0o600
+
+
+def test_launchd_plist_rejects_empty_path(tmp_path):
+    with pytest.raises(ValueError):
+        launchd.build_plist(
+            python_path=str(tmp_path / "python"),
+            worker_script=str(tmp_path / "agent.py"),
+            config_path=str(tmp_path / "config.json"),
+            working_directory=str(tmp_path),
+            log_directory=str(tmp_path / "logs"),
+            path_env="",
+        )
