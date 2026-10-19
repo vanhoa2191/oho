@@ -20,7 +20,12 @@ services:
     restart: unless-stopped
     environment:
       OHO_DATABASE_URL: ${OHO_DATABASE_URL:?OHO_DATABASE_URL required}
-      OHO_ADMIN_TOKEN: ${OHO_ADMIN_TOKEN:?OHO_ADMIN_TOKEN required}
+      OHO_AUTH_MODE: ${OHO_AUTH_MODE:-bearer}
+      OHO_ADMIN_TOKEN: ${OHO_ADMIN_TOKEN:-}
+      OHO_ACCESS_ISSUER: ${OHO_ACCESS_ISSUER:-}
+      OHO_ACCESS_AUD: ${OHO_ACCESS_AUD:-}
+      OHO_ADMIN_EMAIL: ${OHO_ADMIN_EMAIL:-}
+      OHO_ACCESS_JWKS_URL: ${OHO_ACCESS_JWKS_URL:-}
       OHO_ENROLLMENT_TOKEN: ${OHO_ENROLLMENT_TOKEN:?OHO_ENROLLMENT_TOKEN required}
     depends_on:
       db: {condition: service_healthy}
@@ -37,7 +42,16 @@ services:
     ports:
       - "127.0.0.1:${OHO_PORT:-8788}:80"
     networks: [internal]
-  # Expose only web on loopback. Use host Caddy as the public TLS reverse proxy.
+  worker-gateway:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      api: {condition: service_healthy}
+    volumes:
+      - ./deploy/nginx/worker-gateway.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "127.0.0.1:${OHO_WORKER_PORT:-8789}:80"
+    networks: [internal]
 networks:
   internal:
 volumes:
